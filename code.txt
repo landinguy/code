@@ -1,0 +1,225 @@
+    
+	/*** 处理文件 ***/
+	public static void process(String in, String out, Function<String, String> function) {
+        try (
+                BufferedReader br = Files.newBufferedReader(Paths.get(in));
+                BufferedWriter bw = Files.newBufferedWriter(Paths.get(out));
+        ) {
+            br.lines().forEach(line -> {
+                String result = function.apply(line);
+                if (result != null) {
+                    log.info(result);
+                    try {
+                        bw.write(result);
+                        bw.newLine();
+                    } catch (IOException e) {
+                        e.printStackTrace();
+                    }
+                }
+            });
+            bw.flush();
+        } catch (Exception e) {
+            log.error("error", e);
+        }
+    }
+
+
+    /*** 参数检验 ***/
+    @Slf4j
+    @Component
+    public class Validator {
+        public ResultData<Object> validate(BindingResult bindingResult) {
+            ResultData<Object> result = null;
+            if (bindingResult.hasErrors()) {
+                String errMsg = bindingResult.getAllErrors().stream().map(e -> e.getDefaultMessage()).collect(Collectors.joining(","));
+                log.warn("参数校验失败,errMsg#{}", errMsg);
+                result = new ResultData<>();
+                result.setResult(Code.ARGUMENT_ILLEGAL);
+                result.setMsg("参数校验未通过：" + errMsg);
+            }
+            return result;
+        }
+    }
+
+	
+	 public ResultData<Object> process(BindingResult bindingResult, Consumer<ResultData<Object>> consumer, Consumer<Exception> errConsumer) {
+        ResultData<Object> result = new ResultData<>();
+        //参数校验
+        if (bindingResult != null) {
+            ResultData<Object> validate = validator.validate(bindingResult);
+            if (validate != null) return validate;
+        }
+        try {
+            consumer.accept(result);
+        } catch (Exception e) {
+            errConsumer.accept(e);
+            setErrorMsg(result, null, null, e);
+        }
+        return result;
+    }
+
+    public ResultData<Object> process(BindingResult bindingResult, Supplier<ResultData<Object>> supplier, Consumer<Exception> exceptionConsumer) {
+        ResultData<Object> result = new ResultData<>();
+        //参数校验
+        if (bindingResult != null) {
+            ResultData<Object> validate = validator.validate(bindingResult);
+            if (validate != null) return validate;
+        }
+
+        try {
+            result = supplier.get();
+        } catch (Exception e) {
+            exceptionConsumer.accept(e);
+            setErrorMsg(result, null, null, e);
+        }
+        return result;
+    }
+	
+	 public void setErrorMsg(ResultData<Object> result, Integer code, String msg, Exception e) {
+        result.setMsg(msg != null ? msg : "系统错误：" + e.getMessage());
+        result.setResult(code != null ? code : Code.RUN_ERROR);
+    }
+	
+	  
+    /*** 数据排序分页 ***/
+    public JSONObject sortAndPage(List<Object> array, String field, Boolean desc, Integer pageNo, Integer pageSize) {
+        Stream<JSONObject> stream = array.stream().map(it -> (JSONObject) it);
+        //排序
+        if (StringUtils.isNotEmpty(field)) {
+            try {
+                array = stream.sorted(Comparator.comparing(it -> it.getDouble(field), Comparator.reverseOrder())).collect(Collectors.toList());
+                if (!desc) Collections.reverse(array);
+            } catch (Exception e) {
+                log.error("排序发生错误,field#{}", field);
+            }
+        }
+        //分页
+        List<Object> details = array.stream().skip((pageNo - 1) * pageSize).limit(pageSize).collect(Collectors.toList());
+        JSONObject jo = new JSONObject();
+        jo.put("total_count", array.size());
+        jo.put("details", details);
+        return jo;
+    }
+	
+	
+	/*** 发送邮件 ***/
+	@Resource
+    private MailProperties mailProperties;
+	
+	Properties properties = System.getProperties();
+    properties.setProperty("mail.transport.protocol", "smtp");
+    properties.setProperty("mail.smtp.host", mailProperties.getHost());// 设置邮件服务器
+    properties.setProperty("mail.smtp.auth", "true");// 打开认证
+    properties.setProperty("mail.smtp.socketFactory.port", "465");
+    properties.setProperty("mail.smtp.socketFactory.class", "javax.net.ssl.SSLSocketFactory");
+    properties.setProperty("mail.smtp.socketFactory.fallback", "false");
+	
+    public void send(Properties properties, String mail, String cc, String subject, String content) {
+        try {
+            String username = mailProperties.getUsername();
+            String password = mailProperties.getPassword();
+            Session session = Session.getInstance(properties, new Authenticator() {
+                @Override
+                protected PasswordAuthentication getPasswordAuthentication() {
+                    return new PasswordAuthentication(username, password);
+                }
+            });
+            // 创建邮件对象
+            Message message = new MimeMessage(session);
+            // 设置发件人
+            message.setFrom(new InternetAddress(username));
+            // 设置接收人
+            message.addRecipient(Message.RecipientType.TO, new InternetAddress(mail));
+            // 设置抄送人
+            message.addRecipient(Message.RecipientType.CC, new InternetAddress(cc));
+            // 设置邮件主题
+            message.setSubject(subject);
+            // 创建消息部分
+            BodyPart messageBodyPart = new MimeBodyPart();
+            messageBodyPart.setContent(content, "text/html;charset=UTF-8");
+            // 创建多重消息
+            Multipart multipart = new MimeMultipart();
+            // 设置文本消息部分
+            multipart.addBodyPart(messageBodyPart);
+            message.setContent(multipart);
+            // 发送邮件
+            Transport.send(message);
+        } catch (Exception e) {
+            log.error("发送预警邮件失败", e);
+        }
+    }
+	
+	
+	/*** 获取图片尺寸 ***/
+	private String getPictureSize(String filePath) throws Exception {
+		String pictureSize;
+		FFmpegFrameGrabber grabber = new FFmpegFrameGrabber(filePath);
+		grabber.start();
+		BufferedImage image = new Java2DFrameConverter().convert(grabber.grabImage());
+		pictureSize = image.getWidth() + "x" + image.getHeight();
+		grabber.stop();
+		return pictureSize;
+    }
+
+	/*** 获取视频时长，截取封面 ***/
+    private void buildCoverUrlAndVideoType(String videoFile, Material.MaterialBuilder builder) throws Exception {
+        FFmpegFrameGrabber grabber = new FFmpegFrameGrabber(videoFile);
+        grabber.start();
+        int i = 0;
+        Frame frame = null;
+        while (i < grabber.getLengthInFrames()) {
+            frame = grabber.grabImage();
+            if (i > 5 && frame.image != null) break;
+            i++;
+        }
+        BufferedImage bufferedImage = new Java2DFrameConverter().convert(frame);
+        String filename = KsUtil.getUUID() + ".jpg";
+        String filepath = path + "images/" + filename;
+        String url = urlPrefix + "images/" + filename;
+        int height = bufferedImage.getHeight();
+        int width = bufferedImage.getWidth();
+        Long duration = grabber.getLengthInTime() / (1000 * 1000);
+        log.info("coverUrl#{},height#{},width#{},duration#{}", url, height, width, duration);
+        builder.coverUrl(url).videoType(height > width ? 1 : 2).pictureSize(width + "x" + height).duration(duration.intValue());
+        ImageIO.write(bufferedImage, "jpg", new File(filepath));
+        grabber.stop();
+    }
+	
+	需添加以下依赖
+	    <dependency>
+            <groupId>org.bytedeco</groupId>
+            <artifactId>javacv</artifactId>
+            <version>1.4.2</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.bytedeco.javacpp-presets</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+        <dependency>
+            <groupId>org.bytedeco.javacpp-presets</groupId>
+            <artifactId>opencv</artifactId>
+            <version>3.4.2-1.4.2</version>
+        </dependency>
+        <dependency>
+            <groupId>org.bytedeco.javacpp-presets</groupId>
+            <artifactId>opencv</artifactId>
+            <version>3.4.2-1.4.2</version>
+            <!--            <classifier>windows-x86_64</classifier>-->
+            <classifier>linux-x86_64</classifier>
+        </dependency>
+        <!-- https://mvnrepository.com/artifact/org.bytedeco.javacpp-presets/ffmpeg -->
+        <dependency>
+            <groupId>org.bytedeco.javacpp-presets</groupId>
+            <artifactId>ffmpeg</artifactId>
+            <version>4.0.1-1.4.2</version>
+        </dependency>
+        <dependency>
+            <groupId>org.bytedeco.javacpp-presets</groupId>
+            <artifactId>ffmpeg</artifactId>
+            <version>4.0.1-1.4.2</version>
+            <!--            <classifier>windows-x86_64</classifier>-->
+            <classifier>linux-x86_64</classifier>
+        </dependency>
+	
