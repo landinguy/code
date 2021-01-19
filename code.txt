@@ -184,6 +184,34 @@
         ImageIO.write(bufferedImage, "jpg", new File(filepath));
         grabber.stop();
     }
+
+    /*** 压缩图片 ***/
+    public MultipartFile compress(MultipartFile file, float quality) {
+        try (
+                ByteArrayOutputStream out = new ByteArrayOutputStream()
+        ) {
+            BufferedImage src = ImageIO.read(file.getInputStream());
+            ImageWriter imageWriter = ImageIO.getImageWritersByFormatName("jpg").next();
+            imageWriter.reset();
+            imageWriter.setOutput(ImageIO.createImageOutputStream(out));
+
+            ImageWriteParam imgWriteParams = new JPEGImageWriteParam(null);
+            // 指定压缩方式为MODE_EXPLICIT
+            imgWriteParams.setCompressionMode(ImageWriteParam.MODE_EXPLICIT);
+            // 指定压缩程度,quality取值0~1之间
+            imgWriteParams.setCompressionQuality(quality);
+            ColorModel colorModel = src.getColorModel();
+            imgWriteParams.setDestinationType(new ImageTypeSpecifier(colorModel, colorModel.createCompatibleSampleModel(32, 32)));
+
+            imageWriter.write(null, new IIOImage(src, null, null), imgWriteParams);
+            out.flush();
+            file = new MockMultipartFile(file.getName(), file.getName(), "multipart/form-data", out.toByteArray());
+        } catch (Exception e) {
+            log.error("压缩图片出错,filename#{}", file.getOriginalFilename(), e);
+        }
+        return file;
+    }
+
 	
 	需添加以下依赖
 	    <dependency>
